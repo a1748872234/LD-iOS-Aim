@@ -307,6 +307,173 @@ static void ldClaimGift(NSString *type) {
 // 管理面板命令（JDARK_ADMIN|...），目标 PID 由玩家列表选中后填入
 static void ldAdminCmd(NSString *cmd) { ldExecCmd(cmd); }
 
+// ---------- 作弊类型编号（与安卓 EGameCheat 同源，iOS RPC 同枚举值） ----------
+typedef NS_ENUM(NSInteger, LDCheatType) {
+    LDCheatGive = 0, LDCheatLevelUp = 1, LDCheatKill = 2, LDCheatHealAll = 3,
+    LDCheatSlomo = 4, LDCheatSuicide = 5, LDCheatTeleport = 6, LDCheatTime = 7,
+    LDCheatLearnAll = 8, LDCheatUnclaim = 9, LDCheatReColorDino = 10,
+    LDCheatOpenConsoleUI = 11, LDCheatGod = 12, LDCheatSuperStats = 13,
+    LDCheatFly = 14, LDCheatInstantCraft = 15, LDCheatInfiniteAmmo = 16,
+};
+
+// ---------- ArkRH 运行时适配器（反射取单例，取不到不崩） ----------
+static id ldArkAdapter(void) {
+    Class cls = NSClassFromString(@"AJArkRuntimeAdapter");
+    if (!cls) return nil;
+    @try {
+        SEL shared = @selector(shared);
+        if ([cls respondsToSelector:shared]) return [cls performSelector:shared];
+    } @catch (NSException *e) { NSLog(@"[LD] adapter shared err: %@", e); }
+    return nil;
+}
+
+// 通用 NSInvocation 调用：args 按选择器参数顺序，NSNumber 传数值/BOOL，其余传对象；nil 用 NSNull。
+static void ldInvoke(id target, SEL sel, NSArray *args) {
+    if (!target || !sel) return;
+    @try {
+        NSMethodSignature *sig = [target methodSignatureForSelector:sel];
+        if (!sig) { NSLog(@"[LD] 无方法签名 %@", NSStringFromSelector(sel)); return; }
+        NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+        inv.target = target;
+        inv.selector = sel;
+        NSUInteger n = args.count;
+        for (NSUInteger i = 0; i < n; i++) {
+            id a = args[i];
+            NSUInteger idx = i + 2; // 0=self 1=_cmd
+            const char *type = [sig getArgumentTypeAtIndex:idx];
+            if (type[0] == 'i' || type[0] == 's' || type[0] == 'c' || type[0] == 'l' || type[0] == 'q') {
+                long long v = [a isKindOfClass:[NSNumber class]] ? [(NSNumber *)a longLongValue] : 0;
+                inv setArgument:&v atIndex:idx;
+            } else if (type[0] == 'f' || type[0] == 'd') {
+                double v = [a isKindOfClass:[NSNumber class]] ? [(NSNumber *)a doubleValue] : 0;
+                inv setArgument:&v atIndex:idx;
+            } else if (type[0] == 'B') {
+                BOOL v = [a isKindOfClass:[NSNumber class]] ? [(NSNumber *)a boolValue] : NO;
+                inv setArgument:&v atIndex:idx;
+            } else {
+                void *p = (__bridge void *)([a isKindOfClass:[NSNull class]] ? nil : a);
+                inv setArgument:&p atIndex:idx;
+            }
+        }
+        [inv invoke];
+    } @catch (NSException *e) { NSLog(@"[LD] invoke err %@: %@", NSStringFromSelector(sel), e); }
+}
+
+// 选中目标玩家 PID（玩家列表点选后写入；0 表示未选）
+static int64_t g_selPid = 0;
+
+// 切换作弊开关：优先 ArkRH 封装 queueGodConsoleToggleCheatType:enabled:error:；取不到则记日志兜底。
+static void ldToggleCheat(LDCheatType type, BOOL on) {
+    id adapter = ldArkAdapter();
+    if (adapter) {
+        SEL sel = @selector(queueGodConsoleToggleCheatType:enabled:error:);
+        if ([adapter respondsToSelector:sel]) {
+            ldInvoke(adapter, sel, @[@(type), @(on), [NSNull null]]);
+            logLine(@"作弊开关 类型%ld: %@", (long)type, on ? @"开" : @"关");
+            return;
+        }
+    }
+    logLine(@"作弊开关(类型%ld)封装未取到，待主程序定位: %@", (long)type, on ? @"开" : @"关");
+}
+
+// 单参作弊动作（治疗/升级/击杀等，走 GodConsoleCheatType 通道）
+static void ldCheatAction(LDCheatType type) {
+    id adapter = ldArkAdapter();
+    if (adapter) {
+        SEL sel = @selector(queueGodConsoleCheatType:extraData:extraDataTwo:extraDataThree:error:);
+        if ([adapter respondsToSelector:sel]) {
+            ldInvoke(adapter, sel, @[@(type), @0.0, @0.0, @0.0, [NSNull null]]);
+            logLine(@"作弊动作 类型%ld 已下发", (long)type);
+            return;
+        }
+    }
+    logLine(@"作弊动作(类型%ld)封装未取到，待主程序定位", (long)type);
+}
+
+// ---------- 管理面板动作（命令串与安卓模板一致；封装可用时优先 ArkRH） ----------
+static void ldAdminListPlayers(void) {
+    id adapter = ldArkAdapter();
+    if (adapter) {
+        SEL sel = @selector(requestClient110Players);
+        if ([adapter respondsToSelector:sel]) ldInvoke(adapter, sel, @[]);
+    }
+    ldAdminCmd(@"JDARK_ADMIN|LISTPLAYERS");
+    logLine(@"已请求在线玩家列表");
+}
+
+static void ldAdminTeleport(NSString *direction) {
+    if (g_selPid <= 0) { logLine(@"请先在玩家列表选择目标"); return; }
+    NSString *cmd = [NSString stringWithFormat:@"JDARK_ADMIN|TELEPORT|%@|%lld", direction, (long long)g_selPid];
+    ldAdminCmd(cmd);
+    logLine(@"传送 %@ 目标 %lld", [direction isEqualToString:@"BRING"] ? @"拉到身边" : @"传至", (long long)g_selPid);
+}
+
+static void ldAdminBan(void) {
+    if (g_selPid <= 0) { logLine(@"请先在玩家列表选择目标"); return; }
+    ldAdminCmd([NSString stringWithFormat:@"PHXBAN|%lld", (long long)g_selPid]);
+    logLine(@"已发送封禁请求: %lld", (long long)g_selPid);
+}
+
+static void ldAdminGiveItem(int itemIdx, int qty, float quality, BOOL bp) {
+    if (g_selPid <= 0) { logLine(@"请先在玩家列表选择目标"); return; }
+    NSString *cmd = [NSString stringWithFormat:@"JDARK_ADMIN|GIVEITEM|%lld|%d|%d|%.2f|%d",
+                     (long long)g_selPid, itemIdx, qty, quality, bp ? 1 : 0];
+    ldAdminCmd(cmd);
+    logLine(@"发放物资 物品%d 数量%d 品质%.2f 蓝图%d", itemIdx, qty, quality, bp ? 1 : 0);
+}
+
+static void ldAdminSpawnDino(int mode, int dinoIdx, int level) {
+    if (g_selPid <= 0) { logLine(@"请先在玩家列表选择目标"); return; }
+    NSString *cmd = [NSString stringWithFormat:@"JDARK_ADMIN|SPAWNDINO|%lld|%d|%d|%d",
+                     (long long)g_selPid, mode, dinoIdx, level];
+    ldAdminCmd(cmd);
+    logLine(@"生成恐龙 模式%d 索引%d 等级%d", mode, dinoIdx, level);
+}
+
+static void ldAdminDraw(NSString *kind, BOOL on) {
+    NSString *cmd = [NSString stringWithFormat:@"PHXDRAW|%@|%d", kind, on ? 1 : 0];
+    ldAdminCmd(cmd);
+    logLine(@"透视-%@: %@", kind, on ? @"开" : @"关");
+}
+
+static void ldAdminCross(BOOL on) {
+    ldAdminCmd([NSString stringWithFormat:@"PHXCROSS|%d", on ? 1 : 0]);
+    logLine(@"幽灵穿墙: %@", on ? @"开" : @"关");
+}
+
+// ---------- D 类：模组(.pak)下载到沙盒（解压/挂载待引入 minizip + 定位 Mount） ----------
+static NSString *ldModDir(void) {
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *dir = [docs stringByAppendingPathComponent:@"mod"];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    if (![fm fileExistsAtPath:dir])
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    return dir;
+}
+
+static void ldDownloadMod(NSString *urlStr, NSString *modName) {
+    if (!urlStr.length) { logLine(@"模组下载地址为空"); return; }
+    NSURL *url = [NSURL URLWithString:urlStr];
+    if (!url) { logLine(@"模组地址无效"); return; }
+    NSURLSessionTask *t = [[NSURLSession sharedSession] downloadTaskWithURL:url
+        completionHandler:^(NSURL *loc, NSURLResponse *resp, NSError *err) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (err || !loc) { logLine(@"模组下载失败: %@", err.localizedDescription ?: @""); return; }
+            NSString *dir = ldModDir();
+            NSString *zip = [dir stringByAppendingPathComponent:
+                             [NSString stringWithFormat:@".download_%@.zip", modName ?: @"mod"]];
+            [[NSFileManager defaultManager] removeItemAtPath:zip error:nil];
+            NSError *copyErr = nil;
+            [[NSFileManager defaultManager] moveItemAtURL:loc toURL:[NSURL fileURLWithPath:zip] error:&copyErr];
+            if (copyErr) { logLine(@"模组落盘失败: %@", copyErr.localizedDescription); return; }
+            // TODO(D类): 引入 minizip 解压 zip 到 dir；Hook 主程序 FPakPlatformFile::Mount 后补挂 dir 下 .pak。
+            logLine(@"模组已下载: %@（解压/挂载待接入）", zip);
+        });
+    }];
+    [t resume];
+    logLine(@"开始下载模组: %@", modName ?: urlStr);
+}
+
 // ---------- 链接解析：明文 host:port / Base64+ECB 加密串 ----------
 static NSData *aesEcbDecrypt(NSData *data) {
     if (!data || data.length == 0 || (data.length % 16) != 0) return nil;
@@ -773,6 +940,24 @@ static void gpAction(NSString *action, NSString *ex, NSString *label) {
     });
 }
 
+// 玩法补充动作（与安卓 HTML gpMakeup/gpClaimTask/gpBuyCard/gpClaimCardDaily 对齐）
+static void gpMakeup(void) { gpAction(@"signin_makeup", nil, @"补签"); }
+static void gpClaimTask(NSString *taskId) {
+    NSString *ex = [NSString stringWithFormat:@"{\"task_id\":\"%@\"}", taskId ?: @""];
+    gpAction(@"claim_task", ex, @"领取任务奖励");
+}
+static void gpBuyCard(NSString *card) {
+    NSString *ex = [NSString stringWithFormat:@"{\"card\":\"%@\"}", card ?: @""];
+    gpAction(@"vip_card_buy", ex, @"购买会员卡");
+}
+static void gpClaimCardDaily(void) { gpAction(@"vip_card_claim", nil, @"领取会员每日福利"); }
+
+// 模组下载（同安卓服务端固定地址 /api/mod_download/mod.zip）
+static void ldDownloadDefaultMod(void) {
+    NSString *url = [SHOP_API_BASE stringByAppendingString:@"/api/mod_download/mod.zip"];
+    ldDownloadMod(url, @"mod");
+}
+
 static void buildMainPanel(void) {
     @try {
         if (g_mainPanel) return;
@@ -1216,6 +1401,20 @@ static void buildMainPanel(void) {
             bChest.tag = 404;
             [bChest addTarget:[LDPanelHelper shared] action:@selector(btnTap:) forControlEvents:UIControlEventTouchUpInside];
             [g_tabGameplay addSubview:bChest];
+            gy += 40;
+            CGFloat qW = (pw - 24 - 8 * 3) / 4;
+            NSArray<NSString *> *gpExtra = @[@"补签", @"任务奖励", @"买会员卡", @"会员福利"];
+            for (int i = 0; i < (int)gpExtra.count; i++) {
+                UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+                b.frame = CGRectMake(12 + i * (qW + 8), gy, qW, 34);
+                [b setTitle:gpExtra[i] forState:UIControlStateNormal];
+                b.titleLabel.font = [UIFont systemFontOfSize:11];
+                b.backgroundColor = [UIColor colorWithWhite:1 alpha:0.15];
+                b.layer.cornerRadius = 8;
+                b.tag = 405 + i;
+                [b addTarget:[LDPanelHelper shared] action:@selector(btnTap:) forControlEvents:UIControlEventTouchUpInside];
+                [g_tabGameplay addSubview:b];
+            }
         }
         [g_mainPanel addSubview:g_tabGameplay];
 
@@ -1223,22 +1422,24 @@ static void buildMainPanel(void) {
         g_tabAdmin = [[UIView alloc] initWithFrame:CGRectMake(0, y0, pw, ph - y0 - 8)];
         {
             UILabel *tip = [[UILabel alloc] initWithFrame:CGRectMake(12, 8, pw - 24, 34)];
-            tip.text = @"管理 / 传送 / 生成 / 透视：待主程序偏移定位后接通，按钮先占位。";
+            tip.text = @"管理 / 传送 / 生成 / 透视 / 作弊开关：目标玩家先在列表点选；封装未取到时走命令兜底。";
             tip.numberOfLines = 0;
             tip.font = [UIFont systemFontOfSize:11];
             tip.textColor = [UIColor colorWithWhite:1 alpha:0.55];
             [g_tabAdmin addSubview:tip];
-            CGFloat ay = 50;
+            CGFloat ay = 44;
             CGFloat abW = (pw - 24 - 8) / 2;
             NSArray<NSString *> *adminBtns = @[
                 @"在线玩家列表", @"传送至目标", @"拉目标到身边", @"封禁玩家",
                 @"发放物资", @"生成恐龙", @"透视-恐龙", @"透视-人物",
-                @"透视-矿物", @"幽灵穿墙"
+                @"透视-矿物", @"幽灵穿墙",
+                @"无敌", @"飞行", @"负重属性", @"无限子弹",
+                @"秒建", @"治疗", @"升级", @"击杀", @"隐身", @"下载模组"
             ];
             for (int i = 0; i < (int)adminBtns.count; i++) {
                 int row = i / 2, col = i % 2;
                 UIButton *ab = [UIButton buttonWithType:UIButtonTypeSystem];
-                ab.frame = CGRectMake(12 + col * (abW + 8), ay + row * 38, abW, 32);
+                ab.frame = CGRectMake(12 + col * (abW + 8), ay + row * 36, abW, 30);
                 [ab setTitle:adminBtns[i] forState:UIControlStateNormal];
                 ab.titleLabel.font = [UIFont systemFontOfSize:12];
                 ab.backgroundColor = [UIColor colorWithWhite:1 alpha:0.15];
@@ -1361,11 +1562,32 @@ static void buildMainPanel(void) {
         case 402: gpDraw(10); break;
         case 403: gpAction(@"signin", nil, @"签到"); break;
         case 404: gpAction(@"claim_chest", nil, @"开启宝箱"); break;
-        // ===== 管理（占位） =====
-        case 500: case 501: case 502: case 503: case 504:
-        case 505: case 506: case 507: case 508: case 509:
-            logLine(@"管理功能待主程序定位后接通: %@", b.titleLabel.text ?: @"");
-            break;
+        case 405: gpMakeup(); break;
+        case 406: gpClaimTask(@"1"); break;
+        case 407: gpBuyCard(@"1"); break;
+        case 408: gpClaimCardDaily(); break;
+        // ===== 管理：玩家 / 传送 / 封禁 / 物资 / 恐龙 / 透视 / 穿墙 =====
+        case 500: ldAdminListPlayers(); break;
+        case 501: ldAdminTeleport(@"GOTO"); break;
+        case 502: ldAdminTeleport(@"BRING"); break;
+        case 503: ldAdminBan(); break;
+        case 504: ldAdminGiveItem(0, 100, 100.0f, NO); break;
+        case 505: ldAdminSpawnDino(2, 0, 100); break;
+        case 506: ldAdminDraw(@"dinos", YES); break;
+        case 507: ldAdminDraw(@"players", YES); break;
+        case 508: ldAdminDraw(@"resources", YES); break;
+        case 509: ldAdminCross(YES); break;
+        // ===== 作弊开关（toggle 类点击翻转状态） =====
+        case 510: { static BOOL godOn=NO; godOn=!godOn; ldToggleCheat(LDCheatGod, godOn); break; }
+        case 511: { static BOOL flyOn=NO; flyOn=!flyOn; ldToggleCheat(LDCheatFly, flyOn); break; }
+        case 512: { static BOOL statOn=NO; statOn=!statOn; ldToggleCheat(LDCheatSuperStats, statOn); break; }
+        case 513: { static BOOL ammoOn=NO; ammoOn=!ammoOn; ldToggleCheat(LDCheatInfiniteAmmo, ammoOn); break; }
+        case 514: { static BOOL craftOn=NO; craftOn=!craftOn; ldToggleCheat(LDCheatInstantCraft, craftOn); break; }
+        case 515: ldCheatAction(LDCheatHealAll); break;
+        case 516: ldCheatAction(LDCheatLevelUp); break;
+        case 517: ldCheatAction(LDCheatKill); break;
+        case 518: logLine(@"隐身：待主程序定位对应作弊类型"); break;
+        case 519: ldDownloadDefaultMod(); break;
         case 199: { // 关闭
             if (g_mainPanel) { [g_mainPanel removeFromSuperview]; g_mainPanel = nil; }
             break;
