@@ -14,7 +14,7 @@
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 
-static void ldqLog(NSString *line);   // 定义在 phoenix_core.mm
+static void ldqLog(NSString *fmt, ...);   // 定义在 phoenix_core.mm
 
 typedef void *(*PF_FindFn)(void *self, const char *name);
 typedef void *(*PF_GetFn)(void);

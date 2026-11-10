@@ -69,7 +69,11 @@ static void ldqInit(void) {
     });
 }
 
-static void ldqLog(NSString *line) {
+static void ldqLog(NSString *fmt, ...) {
+    if (!fmt) return;
+    va_list ap; va_start(ap, fmt);
+    NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
     if (!line) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         ldqInit();

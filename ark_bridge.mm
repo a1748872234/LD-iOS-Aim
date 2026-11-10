@@ -10,7 +10,7 @@
 // ============================================================
 #import <Foundation/Foundation.h>
 
-static void ldqLog(NSString *line);   // 定义在 phoenix_core.mm
+static void ldqLog(NSString *fmt, ...);   // 定义在 phoenix_core.mm
 static NSMutableDictionary *g_ark = nil;      // 合并后的 ArkRH 状态
 static NSString *g_arkLastEvent = @"";
 static NSMutableArray<NSString *> *g_arkEventLog = nil;
