@@ -1,0 +1,411 @@
+// ============================================================
+//  凤凰 iOS 网页面板（WKWebView 宿主 + Phoenix 桥）
+//  与安卓 phoenix_console.html 的 39 个 JavascriptInterface 一一对齐
+//  编译时由 build.sh 拼接到 entry.mm 之后，共用其中的 static 函数
+// ============================================================
+#import <WebKit/WebKit.h>
+#import <UIKit/UIKit.h>
+
+#pragma mark - 页面需要的 39 个桥接方法
+
+static NSString *const kPhoenixMethods[] = {
+    @"toggleGod", @"toggleFly", @"toggleGhost", @"toggleAmmo", @"toggleWeight",
+    @"toggleInvisible", @"toggleSpeedBuild", @"healAll", @"levelUpTarget",
+    @"setDaytime", @"setNighttime", @"sendCommand", @"joinServer", @"exitServer",
+    @"giveItem", @"spawnDino", @"getQuickStates", @"getClipboard", @"isAdmin",
+    @"getPlayers", @"refreshPlayers", @"getLogs", @"getServerStatus",
+    @"getSavedServers", @"addServer", @"removeServer", @"setActiveServer",
+    @"getActiveServer", @"applyGraphics", @"openGodConsole", @"hideMenu",
+    @"getShopItems", @"getShopBalance", @"buyShopItem", @"refreshShop",
+    @"setWeather", @"modDownload", @"modReset", @"getModDownload",
+    nil
+};
+
+// ---------- 运行态 ----------
+static NSMutableDictionary *g_q = nil;      // 开关状态
+static NSMutableArray<NSString *> *g_logs = nil;  // 日志环形缓冲
+static NSString *g_playersJson = @"[]";     // 玩家列表缓存
+static NSString *g_statusJson = @"{}";      // 玩法/服务器状态缓存
+static NSString *g_shopItems = @"[]";       // 商店商品
+static long long g_balance = 0;             // 余额
+static BOOL g_isAdmin = NO;
+
+static void ldqInit(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        g_q = [NSMutableDictionary dictionaryWithDictionary:@{@"god":@NO, @"fly":@NO, @"ghost":@NO,
+            @"ammo":@NO, @"weight":@NO, @"invisible":@NO, @"speedbuild":@NO}];
+        g_logs = [NSMutableArray array];
+    });
+}
+
+static void ldqLog(NSString *line) {
+    if (!line) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        ldqInit();
+        [g_logs addObject:line];
+        if (g_logs.count > 200) [g_logs removeObjectAtIndex:0];
+    });
+}
+
+static BOOL ldqToggle(NSString *key, BOOL *out) {
+    ldqInit();
+    BOOL v = ![g_q[key] boolValue];
+    g_q[key] = @(v);
+    if (out) *out = v;
+    return v;
+}
+
+#pragma mark - 桥
+
+@interface LDPhoenixWeb : NSObject <WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate>
+@property (nonatomic, strong) WKWebView *web;
+@property (nonatomic, strong) UIWindow *win;
+@property (nonatomic, strong) UIButton *ball;
+@end
+
+@implementation LDPhoenixWeb
+
++ (instancetype)shared {
+    static LDPhoenixWeb *s = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [[LDPhoenixWeb alloc] init]; });
+    return s;
+}
+
+// ---------- 资源路径 ----------
+- (NSURL *)htmlURL {
+    NSString *p = [[NSBundle mainBundle] pathForResource:@"phoenix_console" ofType:@"html" inDirectory:@"phoenix"];
+    if (!p) {
+        NSString *doc = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+        p = [doc stringByAppendingPathComponent:@"phoenix/phoenix_console.html"];
+    }
+    if (!p || ![[NSFileManager defaultManager] fileExistsAtPath:p]) return nil;
+    return [NSURL fileURLWithPath:p];
+}
+
+// ---------- 注入 JS：把 window.Phoenix 建起来，全部走 prompt 同步桥 ----------
+- (NSString *)shimJS {
+    NSMutableString *names = [NSMutableString string];
+    for (int i = 0; kPhoenixMethods[i]; i++) {
+        [names appendFormat:@"'%@'", kPhoenixMethods[i]];
+        [names appendString:(kPhoenixMethods[i + 1] ? @"," : @"")];
+    }
+    return [NSString stringWithFormat:
+        @"(function(){if(window.Phoenix&&window.Phoenix.__shim)return;"
+         "function call(m,a){try{var r=prompt('PHX'+JSON.stringify({m:m,a:a||[]}));"
+         "if(r===null||r==='')return {\"ok\":true};return JSON.parse(r);}catch(e){return {\"ok\":false,\"err\":''+e};}}"
+         "var P={__shim:true};var N=[%@];"
+         "for(var i=0;i<N.length;i++){(function(n){P[n]=function(){return call(n,Array.prototype.slice.call(arguments));};})(N[i]);}"
+         "window.Phoenix=P;})();", names];
+}
+
+// ---------- 悬浮球 ----------
+- (void)installBall {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *key = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+                if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *w in ((UIWindowScene *)sc).windows) { if (w.isKeyWindow) { key = w; break; } }
+                if (key) break;
+            }
+        }
+        if (!key) key = UIApplication.sharedApplication.keyWindow;
+        if (!key) return;
+
+        CGFloat d = 52;
+        UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+        b.frame = CGRectMake([UIScreen mainScreen].bounds.size.width - d - 10, 120, d, d);
+        b.backgroundColor = [UIColor colorWithRed:0.05 green:0.45 blue:0.6 alpha:0.92];
+        b.layer.cornerRadius = d / 2;
+        b.layer.borderWidth = 1.5;
+        b.layer.borderColor = [UIColor colorWithRed:0.28 green:0.85 blue:1.0 alpha:1].CGColor;
+        [b setTitle:@"凤" forState:UIControlStateNormal];
+        b.titleLabel.font = [UIFont boldSystemFontOfSize:22];
+        [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+        [b addTarget:self action:@selector(show) forControlEvents:UIControlEventTouchUpInside];
+        b.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin;
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(dragBall:)];
+        [b addGestureRecognizer:pan];
+        [key addSubview:b];
+        self.ball = b;
+        ldqLog(@"[凤凰] 悬浮球已挂载");
+    });
+}
+
+- (void)dragBall:(UIPanGestureRecognizer *)g {
+    UIView *v = g.view;
+    CGPoint p = [g translationInView:v.superview];
+    v.center = CGPointMake(v.center.x + p.x, v.center.y + p.y);
+    [g setTranslation:CGPointZero inView:v.superview];
+}
+
+// ---------- 显示 ----------
+- (void)show {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.win) { self.win.hidden = NO; return; }
+        NSURL *u = [self htmlURL];
+        if (!u) { ldqLog(@"[凤凰] 找不到 phoenix_console.html，面板无法打开"); return; }
+
+        WKWebViewConfiguration *cfg = [[WKWebViewConfiguration alloc] init];
+        WKUserContentController *ucc = [[WKUserContentController alloc] init];
+        [ucc addScriptMessageHandler:self name:@"phx"];
+        WKUserScript *us = [[WKUserScript alloc] initWithSource:[self shimJS]
+                            injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
+        [ucc addUserScript:us];
+        cfg.userContentController = ucc;
+        cfg.allowsInlineMediaPlayback = YES;
+
+        UIWindow *w = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIScene *sc in UIApplication.sharedApplication.connectedScenes) {
+                if (![sc isKindOfClass:[UIWindowScene class]]) continue;
+                w = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)sc];
+                if (w) break;
+            }
+        }
+        if (!w) w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        w.windowLevel = UIWindowLevelAlert + 1;
+
+        UIViewController *vc = [[UIViewController alloc] init];
+        CGRect f = w.bounds;
+        WKWebView *web = [[WKWebView alloc] initWithFrame:f configuration:cfg];
+        web.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        web.UIDelegate = self;
+        web.navigationDelegate = self;
+        web.opaque = NO;
+        web.backgroundColor = [UIColor blackColor];
+        vc.view.backgroundColor = [UIColor blackColor];
+        [vc.view addSubview:web];
+        w.rootViewController = vc;
+        [w makeKeyAndVisible];
+
+        [web loadFileURL:u allowingReadAccessToURL:[u URLByDeletingLastPathComponent]];
+        self.web = web;
+        self.win = w;
+        w.hidden = NO;
+        ldqLog(@"[凤凰] 面板已打开");
+    });
+}
+
+- (void)hide {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.win) self.win.hidden = YES;
+    });
+}
+
+#pragma mark - WKUIDelegate：prompt 同步桥
+
+- (void)webView:(WKWebView *)webView
+runJavaScriptTextInputPanelWithPrompt:(NSString *)prompt
+     defaultText:(NSString *)defaultText
+initiatedByFrame:(WKFrameInfo *)frame
+completionHandler:(void (^)(NSString * _Nullable))completionHandler {
+    if (![prompt hasPrefix:@"PHX"]) { completionHandler(@""); return; }
+    NSString *json = [prompt substringFromIndex:3];
+    NSString *ret = [self dispatchJSON:json];
+    completionHandler(ret ?: @"");
+}
+
+#pragma mark - 分发
+
+- (NSString *)okJSON:(BOOL)ok extra:(NSString *)extra {
+    if (!extra) return ok ? @"{\"ok\":true}" : @"{\"ok\":false}";
+    return [NSString stringWithFormat:@"{\"ok\":%@,\"data\":%@}", ok ? @"true" : @"false", extra];
+}
+
+- (NSString *)dispatchJSON:(NSString *)json {
+    ldqInit();
+    NSData *d = [json dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *req = d ? [NSJSONSerialization JSONObjectWithData:d options:0 error:nil] : nil;
+    if (![req isKindOfClass:[NSDictionary class]]) return @"{\"ok\":false}";
+    NSString *m = ldStr(req, @"m");
+    NSArray *a = req[@"a"];
+    if (![a isKindOfClass:[NSArray class]]) a = @[];
+
+    @try {
+        // ---- 开关类 ----
+        if ([m isEqualToString:@"toggleGod"])      { BOOL v; ldqToggle(@"god", &v);  ldToggleCheat(LDCheatGod, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
+        if ([m isEqualToString:@"toggleFly"])      { BOOL v; ldqToggle(@"fly", &v);  ldToggleCheat(LDCheatFly, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
+        if ([m isEqualToString:@"toggleAmmo"])     { BOOL v; ldqToggle(@"ammo", &v); ldToggleCheat(LDCheatInfiniteAmmo, v); return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
+        if ([m isEqualToString:@"toggleWeight"])   { BOOL v; ldqToggle(@"weight",&v); ldExecCmd(v ? @"InfiniteWeight" : @"StopInfiniteWeight"); return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
+        if ([m isEqualToString:@"toggleGhost"] || [m isEqualToString:@"toggleInvisible"]) {
+            return @"{\"ok\":false,\"err\":\"当前客户端不支持隐身模式\"}";
+        }
+        if ([m isEqualToString:@"toggleSpeedBuild"]){
+            BOOL v; ldqToggle(@"speedbuild",&v);
+            ldExecCmd([NSString stringWithFormat:@"PHXOPTS|speedbuild|%d", v ? 1 : 0]);
+            return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]];
+        }
+        if ([m isEqualToString:@"getQuickStates"]) {
+            return [self okJSON:YES extra:[ldJsonString(g_q) ?: @"{}"]];
+        }
+
+        // ---- 作弊动作 ----
+        if ([m isEqualToString:@"healAll"])        { ldCheatAction(LDCheatHealAll); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"levelUpTarget"])  { ldCheatAction(LDCheatLevelUp); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"setDaytime"])     { ldCheatAction(LDCheatTime); ldExecCmd(@"SetTimeOfDay 12"); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"setNighttime"])   { ldCheatAction(LDCheatTime); ldExecCmd(@"SetTimeOfDay 0");  return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"openGodConsole"]) { ldCheatAction(LDCheatOpenConsoleUI); return @"{\"ok\":true}"; }
+
+        // ---- 命令 / 进服 ----
+        if ([m isEqualToString:@"sendCommand"]) {
+            NSString *c = a.count ? [NSString stringWithFormat:@"%@", a[0]] : nil;
+            if (!c.length) return @"{\"ok\":false,\"err\":\"命令为空\"}";
+            ldExecCmd(c); ldqLog([NSString stringWithFormat:@"命令: %@", c]);
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"joinServer"]) {
+            NSString *link = a.count ? [NSString stringWithFormat:@"%@", a[0]] : nil;
+            if (!link.length) return @"{\"ok\":false,\"err\":\"服务器地址为空\"}";
+            doJoinLink(link);
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"exitServer"]) { ldExecCmd(@"disconnect"); return @"{\"ok\":true}"; }
+
+        // ---- 管理面板 ----
+        if ([m isEqualToString:@"giveItem"]) {
+            int idx = a.count > 0 ? [a[0] intValue] : 0;
+            int qty = a.count > 1 ? [a[1] intValue] : 1;
+            float q = a.count > 2 ? [a[2] floatValue] : 0.f;
+            BOOL bp = a.count > 3 ? [a[3] boolValue] : NO;
+            ldAdminGiveItem(idx, qty, q, bp);
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"spawnDino"]) {
+            int mode = a.count > 0 ? [a[0] intValue] : 0;
+            int idx  = a.count > 1 ? [a[1] intValue] : 0;
+            int lv   = a.count > 2 ? [a[2] intValue] : 1;
+            ldAdminSpawnDino(mode, idx, lv);
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"refreshPlayers"]) { ldAdminListPlayers(); return [self okJSON:YES extra:g_playersJson]; }
+        if ([m isEqualToString:@"getPlayers"])     { return [self okJSON:YES extra:g_playersJson]; }
+        if ([m isEqualToString:@"isAdmin"])        { return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", g_isAdmin]]; }
+
+        // ---- 日志 / 状态 ----
+        if ([m isEqualToString:@"getLogs"]) {
+            NSArray *arr = [g_logs copy];
+            return [self okJSON:YES extra:[ldJsonString(@{@"lines": arr}) ?: @"{}"]];
+        }
+        if ([m isEqualToString:@"getServerStatus"]) {
+            ldGameplayInfo(^(BOOL ok, NSString *body) {
+                if (ok && body.length) g_statusJson = body;
+            });
+            return [self okJSON:YES extra:(g_statusJson.length ? g_statusJson : @"{}")];
+        }
+
+        // ---- 剪贴板 ----
+        if ([m isEqualToString:@"getClipboard"]) {
+            NSString *s = [UIPasteboard generalPasteboard].string ?: @"";
+            return [self okJSON:YES extra:[ldJsonString(@{@"text": s}) ?: @"{}"]];
+        }
+
+        // ---- 服务器列表（本地存档）----
+        if ([m isEqualToString:@"getSavedServers"]) {
+            NSArray *v = [[NSUserDefaults standardUserDefaults] arrayForKey:@"phx_servers"] ?: @[];
+            return [self okJSON:YES extra:[ldJsonString(@{@"servers": v}) ?: @"{}"]];
+        }
+        if ([m isEqualToString:@"addServer"] || [m isEqualToString:@"removeServer"]) {
+            NSString *s = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"";
+            NSMutableArray *v = [[[NSUserDefaults standardUserDefaults] arrayForKey:@"phx_servers"] mutableCopy] ?: [NSMutableArray array];
+            if ([m isEqualToString:@"addServer"]) { if (s.length && ![v containsObject:s]) [v addObject:s]; }
+            else { [v removeObject:s]; }
+            [[NSUserDefaults standardUserDefaults] setObject:v forKey:@"phx_servers"];
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"setActiveServer"]) {
+            NSString *s = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"";
+            [[NSUserDefaults standardUserDefaults] setObject:s forKey:@"phx_active_server"];
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"getActiveServer"]) {
+            NSString *s = [[NSUserDefaults standardUserDefaults] stringForKey:@"phx_active_server"] ?: @"";
+            return [self okJSON:YES extra:[ldJsonString(@{@"server": s}) ?: @"{}"]];
+        }
+
+        // ---- 画质 / 天气 ----
+        if ([m isEqualToString:@"applyGraphics"]) {
+            NSString *cfg = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"{}";
+            ldExecCmd([NSString stringWithFormat:@"PHXGFX|%@", cfg]);
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"setWeather"]) {
+            NSString *mode = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"clear";
+            ldExecCmd([NSString stringWithFormat:@"PHXWEATHER|%@", mode]);
+            return @"{\"ok\":true}";
+        }
+
+        // ---- 商店 ----
+        if ([m isEqualToString:@"refreshShop"] || [m isEqualToString:@"getShopItems"]) {
+            ldGetItems(^(BOOL ok, NSString *body) {
+                if (ok && body.length) g_shopItems = body;
+            });
+            return [self okJSON:YES extra:(g_shopItems.length ? g_shopItems : @"[]")];
+        }
+        if ([m isEqualToString:@"getShopBalance"]) {
+            ldGetBalance(^(BOOL ok, NSString *body) {
+                if (!ok) return;
+                NSDictionary *r = ldParseJson(body);
+                if ([r isKindOfClass:[NSDictionary class]]) g_balance = (long long)ldInt(r, @"balance");
+            });
+            return [self okJSON:YES extra:[NSString stringWithFormat:@"{\"balance\":%lld}", g_balance]];
+        }
+        if ([m isEqualToString:@"buyShopItem"]) {
+            NSString *iid = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"";
+            NSInteger q = a.count > 1 ? [a[1] integerValue] : 1;
+            if (!iid.length) return @"{\"ok\":false,\"err\":\"商品 ID 为空\"}";
+            ldBuyItem(iid, q, ^(BOOL ok, NSString *body) {
+                ldqLog([NSString stringWithFormat:@"购买 %@ -> %@", iid, ok ? @"ok" : (body ?: @"fail")]);
+            });
+            return @"{\"ok\":true}";
+        }
+
+        // ---- 模组下载 ----
+        if ([m isEqualToString:@"modDownload"]) {
+            NSString *url = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"";
+            NSString *nm  = a.count > 1 ? [NSString stringWithFormat:@"%@", a[1]] : @"mod";
+            if (!url.length) { ldDownloadDefaultMod(); return @"{\"ok\":true}"; }
+            ldDownloadMod(url, nm);
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"modReset"]) {
+            ldExecCmd(@"PHXMOD|reset");
+            return @"{\"ok\":true}";
+        }
+        if ([m isEqualToString:@"getModDownload"]) {
+            NSString *p = ldModDir();
+            BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:p];
+            return [self okJSON:YES extra:[ldJsonString(@{@"dir": p ?: @"", @"installed": @(exists)}) ?: @"{}"]];
+        }
+
+        // ---- 面板自身 ----
+        if ([m isEqualToString:@"hideMenu"]) { [self hide]; return @"{\"ok\":true}"; }
+
+        return @"{\"ok\":false,\"err\":\"未实现的桥接方法\"}";
+    } @catch (NSException *e) {
+        return [NSString stringWithFormat:@"{\"ok\":false,\"err\":\"%@\"}", [e reason] ?: @"exception"];
+    }
+}
+
+#pragma mark - WKScriptMessageHandler（异步补充通道）
+
+- (void)userContentController:(WKUserContentController *)ucc didReceiveScriptMessage:(WKScriptMessage *)msg {
+    if (![msg.name isEqualToString:@"phx"]) return;
+    id body = msg.body;
+    if ([body isKindOfClass:[NSString class]]) { [self dispatchJSON:body]; }
+}
+
+@end
+
+#pragma mark - 启动
+
+__attribute__((constructor))
+static void ld_phoenix_web_boot(void) {
+    @autoreleasepool {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[LDPhoenixWeb shared] installBall];
+        });
+    }
+}
