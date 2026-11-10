@@ -395,6 +395,19 @@ static void ldCheatAction(LDCheatType type) {
     }
     logLine(@"作弊动作(类型%ld)封装未取到，待主程序定位", (long)type);
 }
+// 带参数的作弊动作（时间/数值类走 extraData 传给 GodConsole）
+static void ldCheatActionEx(LDCheatType type, float extra) {
+    id adapter = ldArkAdapter();
+    if (adapter) {
+        SEL sel = @selector(queueGodConsoleCheatType:extraData:extraDataTwo:extraDataThree:error:);
+        if ([adapter respondsToSelector:sel]) {
+            ldInvoke(adapter, sel, @[@(type), @(extra), @0.0, @0.0, [NSNull null]]);
+            logLine(@"作弊动作 类型%ld 参数%.2f 已下发", (long)type, extra);
+            return;
+        }
+    }
+    logLine(@"作弊动作(类型%ld)封装未取到，待主程序定位", (long)type);
+}
 
 // ---------- 管理面板动作（命令串与安卓模板一致；封装可用时优先 ArkRH） ----------
 static void ldAdminListPlayers(void) {

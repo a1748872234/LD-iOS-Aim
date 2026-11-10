@@ -221,8 +221,8 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         // ---- 作弊动作 ----
         if ([m isEqualToString:@"healAll"])        { ldCheatAction(LDCheatHealAll); return @"{\"ok\":true}"; }
         if ([m isEqualToString:@"levelUpTarget"])  { ldCheatAction(LDCheatLevelUp); return @"{\"ok\":true}"; }
-        if ([m isEqualToString:@"setDaytime"])     { ldCheatAction(LDCheatTime); ldExecCmd(@"SetTimeOfDay 12"); return @"{\"ok\":true}"; }
-        if ([m isEqualToString:@"setNighttime"])   { ldCheatAction(LDCheatTime); ldExecCmd(@"SetTimeOfDay 0");  return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"setDaytime"])     { ldCheatActionEx(LDCheatTime, 12.0f); ldExecCmd(@"ce SetTimeOfDay 12"); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"setNighttime"])   { ldCheatActionEx(LDCheatTime, 0.0f);  ldExecCmd(@"ce SetTimeOfDay 0");  return @"{\"ok\":true}"; }
         if ([m isEqualToString:@"openGodConsole"]) { ldCheatAction(LDCheatOpenConsoleUI); return @"{\"ok\":true}"; }
 
         // ---- 命令 / 进服 ----
