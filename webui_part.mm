@@ -196,12 +196,19 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
 
     @try {
         // ---- 开关类 ----
-        if ([m isEqualToString:@"toggleGod"])      { BOOL v; ldqToggle(@"god", &v);  ldToggleCheat(LDCheatGod, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
+        if ([m isEqualToString:@"toggleGod"])      { if (!g_adminOK) { return @"{\"ok\":false,\"err\":\"需要服务器管理员权限\"}"; } BOOL v; ldqToggle(@"god", &v);  ldToggleCheat(LDCheatGod, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
         if ([m isEqualToString:@"toggleFly"])      { BOOL v; ldqToggle(@"fly", &v);  ldToggleCheat(LDCheatFly, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
         if ([m isEqualToString:@"toggleAmmo"])     { BOOL v; ldqToggle(@"ammo", &v); ldToggleCheat(LDCheatInfiniteAmmo, v); return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
         if ([m isEqualToString:@"toggleWeight"])   { BOOL v; ldqToggle(@"weight",&v); if (v) { ldExecCmd(@"InfiniteWeight"); return [self okJSON:YES extra:@"1"]; }
             return @"{\"ok\":false,\"err\":\"无限负重需重新进服后恢复\"}"; }
-        if ([m isEqualToString:@"toggleGhost"] || [m isEqualToString:@"toggleInvisible"]) {
+        if ([m isEqualToString:@"toggleGhost"]) {
+            // 安卓侧是本地 CheatManager::Ghost（vtable 槽 0x2e8），iOS 等价走本地控制台
+            BOOL v; ldqToggle(@"ghost", &v);
+            ldExecCmd(@"Ghost");
+            return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]];
+        }
+        if ([m isEqualToString:@"toggleInvisible"]) {
+            // 安卓侧同样不支持自身隐身（无对应作弊函数/状态位），口径保持一致
             return @"{\"ok\":false,\"err\":\"当前客户端不支持隐身模式\"}";
         }
         if ([m isEqualToString:@"toggleSpeedBuild"]){
@@ -219,10 +226,10 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         }
 
         // ---- 作弊动作 ----
-        if ([m isEqualToString:@"healAll"])        { ldCheatAction(LDCheatHealAll); return @"{\"ok\":true}"; }
-        if ([m isEqualToString:@"levelUpTarget"])  { ldCheatAction(LDCheatLevelUp); return @"{\"ok\":true}"; }
-        if ([m isEqualToString:@"setDaytime"])     { ldCheatActionEx(LDCheatTime, 12.0f); ldExecCmd(@"ce SetTimeOfDay 12"); return @"{\"ok\":true}"; }
-        if ([m isEqualToString:@"setNighttime"])   { ldCheatActionEx(LDCheatTime, 0.0f);  ldExecCmd(@"ce SetTimeOfDay 0");  return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"healAll"])        { if (!g_adminOK) { return @"{\"ok\":false,\"err\":\"需要服务器管理员权限\"}"; } ldCheatAction(LDCheatHealAll); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"levelUpTarget"])  { if (!g_adminOK) { return @"{\"ok\":false,\"err\":\"需要服务器管理员权限\"}"; } ldCheatAction(LDCheatLevelUp); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"setDaytime"])     { if (!g_adminOK) { return @"{\"ok\":false,\"err\":\"需要服务器管理员权限\"}"; } ldCheatActionEx(LDCheatTime, 28800.0f); return @"{\"ok\":true}"; }
+        if ([m isEqualToString:@"setNighttime"])   { if (!g_adminOK) { return @"{\"ok\":false,\"err\":\"需要服务器管理员权限\"}"; } ldCheatActionEx(LDCheatTime, 72000.0f); return @"{\"ok\":true}"; }
         if ([m isEqualToString:@"openGodConsole"]) { ldCheatAction(LDCheatOpenConsoleUI); return @"{\"ok\":true}"; }
 
         // ---- 命令 / 进服 ----
@@ -260,7 +267,7 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
             ldAdminSpawnDino(mode, idx, lv);
             return @"{\"ok\":true}";
         }
-        if ([m isEqualToString:@"refreshPlayers"]) { ldAdminListPlayers(); return [self okJSON:YES extra:g_playersJson]; }
+        if ([m isEqualToString:@"refreshPlayers"]) { if (!g_adminOK) { return @"{\"ok\":false,\"err\":\"需要服务器管理员权限\"}"; } ldAdminListPlayers(); return [self okJSON:YES extra:g_playersJson]; }
         if ([m isEqualToString:@"getPlayers"])     { return [self okJSON:YES extra:g_playersJson]; }
         if ([m isEqualToString:@"isAdmin"])        { return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", g_adminOK]]; }
 

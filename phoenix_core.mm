@@ -246,7 +246,10 @@ static BOOL phxLocalChannel(NSString *cmd) {
     }
     if ([cmd hasPrefix:@"PHXSELECT|"]) {
         NSString *p = [cmd substringFromIndex:10];
+        while (p.length && ([p hasPrefix:@" "] || [p hasPrefix:@"\""])) p = [p substringFromIndex:1];
+        while (p.length && ([p hasSuffix:@" "] || [p hasSuffix:@"\""])) p = [p substringToIndex:p.length-1];
         g_selGivePid = p.longLongValue;
+        g_selPid = g_selGivePid;        // 发放/生成/传送共用同一个目标
         logLine(@"[凤凰] 已选中目标玩家 %@", p);
         return YES;
     }
@@ -263,9 +266,16 @@ static BOOL phxLocalChannel(NSString *cmd) {
     if ([cmd hasPrefix:@"PHXSPAWN|"]) {
         NSArray *f = phxSplit(cmd, @"|");
         int idx  = f.count > 1 ? [f[1] intValue] : -1;
-        int mode = f.count > 2 ? [f[2] intValue] : 0;
-        int lv   = f.count > 3 ? [f[3] intValue] : 1;
         if (idx < 0) { g_shopMsg = @"生成参数不完整"; return YES; }
+        // 安卓侧第三段是中文模式文本（野生/驯服/首领），不是数字
+        NSString *modeText = f.count > 2 ? [NSString stringWithFormat:@"%@", f[2]] : @"";
+        int mode;
+        if ([modeText containsString:@"驯服"])      mode = 2;   // SummonTamed
+        else if ([modeText containsString:@"首领"]) mode = 0;   // GMSummon
+        else if ([modeText containsString:@"野生"]) mode = 1;   // Summon
+        else                                        mode = modeText.intValue;
+        int lv   = f.count > 3 ? [f[3] intValue] : 1;
+        if (lv <= 0) lv = 1;
         ldAdminSpawnDino(mode, idx, lv);
         g_shopMsg = [NSString stringWithFormat:@"已生成生物 #%d 等级 %d", idx, lv];
         return YES;
