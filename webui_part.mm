@@ -199,13 +199,19 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         if ([m isEqualToString:@"toggleGod"])      { BOOL v; ldqToggle(@"god", &v);  ldToggleCheat(LDCheatGod, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
         if ([m isEqualToString:@"toggleFly"])      { BOOL v; ldqToggle(@"fly", &v);  ldToggleCheat(LDCheatFly, v);  return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
         if ([m isEqualToString:@"toggleAmmo"])     { BOOL v; ldqToggle(@"ammo", &v); ldToggleCheat(LDCheatInfiniteAmmo, v); return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
-        if ([m isEqualToString:@"toggleWeight"])   { BOOL v; ldqToggle(@"weight",&v); ldExecCmd(v ? @"InfiniteWeight" : @"StopInfiniteWeight"); return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]]; }
+        if ([m isEqualToString:@"toggleWeight"])   { BOOL v; ldqToggle(@"weight",&v); if (v) { ldExecCmd(@"InfiniteWeight"); return [self okJSON:YES extra:@"1"]; }
+            return @"{\"ok\":false,\"err\":\"无限负重需重新进服后恢复\"}"; }
         if ([m isEqualToString:@"toggleGhost"] || [m isEqualToString:@"toggleInvisible"]) {
             return @"{\"ok\":false,\"err\":\"当前客户端不支持隐身模式\"}";
         }
         if ([m isEqualToString:@"toggleSpeedBuild"]){
             BOOL v; ldqToggle(@"speedbuild",&v);
-            ldExecCmd([NSString stringWithFormat:@"PHXOPTS|speedbuild|%d", v ? 1 : 0]);
+            id ad = ldArkAdapter();
+            if (ad && [ad respondsToSelector:@selector(queueInstantCraftToggle:)]) {
+                ldInvoke(ad, @selector(queueInstantCraftToggle:), @[@(v)]);
+                return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]];
+            }
+            ldCheatAction(LDCheatInstantCraft);
             return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]];
         }
         if ([m isEqualToString:@"getQuickStates"]) {
@@ -357,8 +363,12 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         }
         if ([m isEqualToString:@"getModDownload"]) {
             NSString *p = phxModCacheDir();
-            BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:p];
-            return [self okJSON:YES extra:(ldJsonString(@{@"dir": (p ?: @""), @"installed": @(exists)}) ?: @"{}")];
+            NSArray *ls = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:p error:nil] ?: @[];
+            NSMutableArray *paks = [NSMutableArray array];
+            for (NSString *n in ls)
+                if ([n.pathExtension.lowercaseString isEqualToString:@"pak"]) [paks addObject:n];
+            return [self okJSON:YES extra:(ldJsonString(@{@"dir": (p ?: @""),
+                @"installed": @(paks.count > 0), @"paks": paks}) ?: @"{}")];
         }
 
         // ---- 面板自身 ----
