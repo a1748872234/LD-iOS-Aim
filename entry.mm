@@ -723,7 +723,7 @@ static void showTab(int idx) {
 }
 
 // 服务器列表 UI（NSUserDefaults 数组：{name, remark, link}）
-static UIView *g_srvListContainer = nil;
+static UIScrollView *g_srvListContainer = nil;
 
 static void refreshServerListUI(void) {
     for (UIView *v in g_srvListContainer.subviews) [v removeFromSuperview];
