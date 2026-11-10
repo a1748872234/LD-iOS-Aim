@@ -309,6 +309,9 @@ static void ldAdminCmd(NSString *cmd) { ldExecCmd(cmd); }
 
 // 前向声明：日志函数定义在后面的 UI 段，这里先声明供上方管理/作弊函数使用
 static void logLine(NSString *fmt, ...);
+// 模组安装（解压 + pak 挂载），实现在 pak_mount.mm
+BOOL phxInstallModZip(NSString *zipPath);
+BOOL phxClearMods(void);
 
 // ---------- 作弊类型编号（与安卓 EGameCheat 同源，iOS RPC 同枚举值） ----------
 typedef NS_ENUM(NSInteger, LDCheatType) {
@@ -469,8 +472,19 @@ static void ldDownloadMod(NSString *urlStr, NSString *modName) {
             NSError *copyErr = nil;
             [[NSFileManager defaultManager] moveItemAtURL:loc toURL:[NSURL fileURLWithPath:zip] error:&copyErr];
             if (copyErr) { logLine(@"模组落盘失败: %@", copyErr.localizedDescription); return; }
-            // TODO(D类): 引入 minizip 解压 zip 到 dir；Hook 主程序 FPakPlatformFile::Mount 后补挂 dir 下 .pak。
-            logLine(@"模组已下载: %@（解压/挂载待接入）", zip);
+            logLine(@"模组已下载: %@", zip);
+            NSString *cache = [NSHomeDirectory() stringByAppendingPathComponent:
+                @"Documents/ShooterGame/PersistentDownloadDir/PakCache"];
+            [[NSFileManager defaultManager] createDirectoryAtPath:cache
+                withIntermediateDirectories:YES attributes:nil error:nil];
+            NSString *keep = [cache stringByAppendingPathComponent:
+                [NSString stringWithFormat:@"%@.zip", modName ?: @"mod"]];
+            [[NSFileManager defaultManager] removeItemAtPath:keep error:nil];
+            BOOL moved = [[NSFileManager defaultManager] copyItemAtPath:zip toPath:keep error:nil];
+            if (moved) {
+                BOOL mounted = phxInstallModZip(keep);
+                logLine(@"模组挂载%@: %@", mounted ? @"成功" : @"失败", keep.lastPathComponent);
+            }
         });
     }];
     [t resume];

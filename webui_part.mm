@@ -22,7 +22,7 @@ static NSString *const kPhoenixMethods[] = {
 };
 
 // ---------- 运行态（开关/日志/g_q 由 phoenix_core.mm 提供） ----------
-static NSString *g_shopItems = @"[]";       // 商店商品
+static NSString *g_shopItemsJson = @"[]";       // 商店商品
 static long long g_shopBalanceLocal = 0;    // 余额
 
 
@@ -261,7 +261,7 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         // ---- 日志 / 状态 ----
         if ([m isEqualToString:@"getLogs"]) {
             NSArray *arr = [g_logs copy];
-            return [self okJSON:YES extra:[ldJsonString(@{@"lines": arr}) ?: @"{}"]];
+            return [self okJSON:YES extra:(ldJsonString(@{@"lines": arr}) ?: @"{}")];
         }
         if ([m isEqualToString:@"getServerStatus"]) {
             // 先从云端回拉玩法数据（异步），本次先返回现有快照
@@ -274,13 +274,13 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         // ---- 剪贴板 ----
         if ([m isEqualToString:@"getClipboard"]) {
             NSString *s = [UIPasteboard generalPasteboard].string ?: @"";
-            return [self okJSON:YES extra:[ldJsonString(@{@"text": s}) ?: @"{}"]];
+            return [self okJSON:YES extra:(ldJsonString(@{@"text": s}) ?: @"{}")];
         }
 
         // ---- 服务器列表（本地存档）----
         if ([m isEqualToString:@"getSavedServers"]) {
             NSArray *v = [[NSUserDefaults standardUserDefaults] arrayForKey:@"phx_servers"] ?: @[];
-            return [self okJSON:YES extra:[ldJsonString(@{@"servers": v}) ?: @"{}"]];
+            return [self okJSON:YES extra:(ldJsonString(@{@"servers": v}) ?: @"{}")];
         }
         if ([m isEqualToString:@"addServer"] || [m isEqualToString:@"removeServer"]) {
             NSString *s = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"";
@@ -297,27 +297,33 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         }
         if ([m isEqualToString:@"getActiveServer"]) {
             NSString *s = [[NSUserDefaults standardUserDefaults] stringForKey:@"phx_active_server"] ?: @"";
-            return [self okJSON:YES extra:[ldJsonString(@{@"server": s}) ?: @"{}"]];
+            return [self okJSON:YES extra:(ldJsonString(@{@"server": s}) ?: @"{}")];
         }
 
         // ---- 画质 / 天气 ----
         if ([m isEqualToString:@"applyGraphics"]) {
             NSString *cfg = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"{}";
-            ldExecCmd([NSString stringWithFormat:@"PHXGFX|%@", cfg]);
-            return @"{\"ok\":true}";
+            [NSUserDefaults.standardUserDefaults setObject:cfg forKey:@"phx_graphics"];
+            id ad = ldArkAdapter();
+            BOOL sent = NO;
+            if (ad) {
+                NSString *preset = @"balanced";
+                if ([cfg containsString:@"low"]) preset = @"low";
+                else if ([cfg containsString:@"high"] || [cfg containsString:@"ultra"]) preset = @"high";
+                sent = phxSendSel(@"scheduleIOSGraphicsPreset:error:", preset);
+            }
+            return sent ? @"{\"ok\":true}" : @"{\"ok\":false,\"err\":\"画质预设未就绪\"}";
         }
         if ([m isEqualToString:@"setWeather"]) {
-            NSString *mode = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"clear";
-            ldExecCmd([NSString stringWithFormat:@"PHXWEATHER|%@", mode]);
-            return @"{\"ok\":true}";
+            return @"{\"ok\":false,\"err\":\"当前客户端不支持该操作：世界天气\"}";
         }
 
         // ---- 商店 ----
         if ([m isEqualToString:@"refreshShop"] || [m isEqualToString:@"getShopItems"]) {
             ldGetItems(^(BOOL ok, NSString *body) {
-                if (ok && body.length) g_shopItems = body;
+                if (ok && body.length) g_shopItemsJson = body;
             });
-            return [self okJSON:YES extra:(g_shopItems.length ? g_shopItems : @"[]")];
+            return [self okJSON:YES extra:(g_shopItemsJson.length ? g_shopItemsJson : @"[]")];
         }
         if ([m isEqualToString:@"getShopBalance"]) {
             ldGetBalance(^(BOOL ok, NSString *body) {
@@ -346,13 +352,13 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
             return @"{\"ok\":true}";
         }
         if ([m isEqualToString:@"modReset"]) {
-            ldExecCmd(@"PHXMOD|reset");
-            return @"{\"ok\":true}";
+            BOOL ok = phxClearMods();
+            return ok ? @"{\"ok\":true}" : @"{\"ok\":false}";
         }
         if ([m isEqualToString:@"getModDownload"]) {
-            NSString *p = ldModDir();
+            NSString *p = phxModCacheDir();
             BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:p];
-            return [self okJSON:YES extra:[ldJsonString(@{@"dir": p ?: @"", @"installed": @(exists)}) ?: @"{}"]];
+            return [self okJSON:YES extra:(ldJsonString(@{@"dir": (p ?: @""), @"installed": @(exists)}) ?: @"{}")];
         }
 
         // ---- 面板自身 ----

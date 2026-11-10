@@ -127,12 +127,12 @@ static void phxLoadSpawnData(void) {
     NSMutableArray *it = [NSMutableArray array];
     for (NSDictionary *o in root[@"items"]) {
         if (![o isKindOfClass:[NSDictionary class]]) continue;
-        [it addObject:@{@"n": o[@"n"] ?: @"", @"c": o[@"c"] ?: @""}];
+        [it addObject:@{@"n": (o[@"n"] ?: @""), @"c": (o[@"c"] ?: @"")}];
     }
     NSMutableArray *dn = [NSMutableArray array];
     for (NSDictionary *o in root[@"dinos"]) {
         if (![o isKindOfClass:[NSDictionary class]]) continue;
-        [dn addObject:@{@"n": o[@"n"] ?: @"", @"k": o[@"k"] ?: @""}];
+        [dn addObject:@{@"n": (o[@"n"] ?: @""), @"k": (o[@"k"] ?: @"")}];
     }
     g_itemOptsJson = phxJ(it);
     g_dinoOptsJson = phxJ(dn);
@@ -163,7 +163,7 @@ static BOOL phxHandleServerCommand(NSString *cmd) {
         uint64_t resp = phxAuthResponse(pid, nonce);
         NSString *out = [NSString stringWithFormat:@"JDARK_CLIENT|AUTH|%llu|%llu|%llu|%llu",
                          kAuthVersion, pid, nonce, resp];
-        ldExecCmd(out);
+        if (!phxSendProtocol(out)) ldExecCmd(out);
         logLine(@"[凤凰] 已提交客户端识别响应 pid=%llu nonce=%llu", pid, nonce);
         return YES;
     }
@@ -270,12 +270,12 @@ static BOOL phxLocalChannel(NSString *cmd) {
         NSArray *f = phxSplit(cmd, @"|");
         NSString *dir = f.count > 1 ? f[1] : @"GOTO";
         NSString *pid = f.count > 2 ? f[2] : @"";
-        ldAdminCmd([NSString stringWithFormat:@"JDARK_ADMIN|TELEPORT|%@|%@", dir, pid]);
+        phxSendProtocol([NSString stringWithFormat:@"JDARK_ADMIN|TELEPORT|%@|%@", dir, pid]);
         return YES;
     }
     if ([cmd hasPrefix:@"PHXBAN|"]) {
         NSString *pid = [cmd substringFromIndex:7];
-        ldAdminCmd([NSString stringWithFormat:@"JDARK_ADMIN|BAN|%@", pid]);
+        phxSendProtocol([NSString stringWithFormat:@"JDARK_ADMIN|BAN|%@", pid]);
         logLine(@"[凤凰] 已提交封禁 %@", pid);
         return YES;
     }
@@ -362,6 +362,10 @@ static NSString *phxStatusJSON(void) {
     // 生成面板名单
     d[@"itemOptions"] = g_itemOptsJson ?: @"[]";
     d[@"dinoOptions"] = g_dinoOptsJson ?: @"[]";
+
+    // ArkRH 已有的运行时状态（通知 + KVC 回读）
+    NSDictionary *ark = phxArkSnapshot();
+    if (ark) [d addEntriesFromDictionary:ark];
 
     return phxJ(d);
 }
