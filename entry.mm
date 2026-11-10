@@ -307,6 +307,9 @@ static void ldClaimGift(NSString *type) {
 // 管理面板命令（JDARK_ADMIN|...），目标 PID 由玩家列表选中后填入
 static void ldAdminCmd(NSString *cmd) { ldExecCmd(cmd); }
 
+// 前向声明：日志函数定义在后面的 UI 段，这里先声明供上方管理/作弊函数使用
+static void logLine(NSString *fmt, ...);
+
 // ---------- 作弊类型编号（与安卓 EGameCheat 同源，iOS RPC 同枚举值） ----------
 typedef NS_ENUM(NSInteger, LDCheatType) {
     LDCheatGive = 0, LDCheatLevelUp = 1, LDCheatKill = 2, LDCheatHealAll = 3,
@@ -343,16 +346,16 @@ static void ldInvoke(id target, SEL sel, NSArray *args) {
             const char *type = [sig getArgumentTypeAtIndex:idx];
             if (type[0] == 'i' || type[0] == 's' || type[0] == 'c' || type[0] == 'l' || type[0] == 'q') {
                 long long v = [a isKindOfClass:[NSNumber class]] ? [(NSNumber *)a longLongValue] : 0;
-                inv setArgument:&v atIndex:idx;
+                [inv setArgument:&v atIndex:idx];
             } else if (type[0] == 'f' || type[0] == 'd') {
                 double v = [a isKindOfClass:[NSNumber class]] ? [(NSNumber *)a doubleValue] : 0;
-                inv setArgument:&v atIndex:idx;
+                [inv setArgument:&v atIndex:idx];
             } else if (type[0] == 'B') {
                 BOOL v = [a isKindOfClass:[NSNumber class]] ? [(NSNumber *)a boolValue] : NO;
-                inv setArgument:&v atIndex:idx;
+                [inv setArgument:&v atIndex:idx];
             } else {
                 void *p = (__bridge void *)([a isKindOfClass:[NSNull class]] ? nil : a);
-                inv setArgument:&p atIndex:idx;
+                [inv setArgument:&p atIndex:idx];
             }
         }
         [inv invoke];
