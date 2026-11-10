@@ -21,40 +21,10 @@ static NSString *const kPhoenixMethods[] = {
     nil
 };
 
-// ---------- 运行态 ----------
-static NSMutableDictionary *g_q = nil;      // 开关状态
-static NSMutableArray<NSString *> *g_logs = nil;  // 日志环形缓冲
-static NSString *g_playersJson = @"[]";     // 玩家列表缓存
-static NSString *g_statusJson = @"{}";      // 玩法/服务器状态缓存
+// ---------- 运行态（开关/日志/g_q 由 phoenix_core.mm 提供） ----------
 static NSString *g_shopItems = @"[]";       // 商店商品
-static long long g_balance = 0;             // 余额
-static BOOL g_isAdmin = NO;
+static long long g_shopBalanceLocal = 0;    // 余额
 
-static void ldqInit(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        g_q = [NSMutableDictionary dictionaryWithDictionary:@{@"god":@NO, @"fly":@NO, @"ghost":@NO,
-            @"ammo":@NO, @"weight":@NO, @"invisible":@NO, @"speedbuild":@NO}];
-        g_logs = [NSMutableArray array];
-    });
-}
-
-static void ldqLog(NSString *line) {
-    if (!line) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        ldqInit();
-        [g_logs addObject:line];
-        if (g_logs.count > 200) [g_logs removeObjectAtIndex:0];
-    });
-}
-
-static BOOL ldqToggle(NSString *key, BOOL *out) {
-    ldqInit();
-    BOOL v = ![g_q[key] boolValue];
-    g_q[key] = @(v);
-    if (out) *out = v;
-    return v;
-}
 
 #pragma mark - 桥
 
@@ -239,7 +209,7 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
             return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", v]];
         }
         if ([m isEqualToString:@"getQuickStates"]) {
-            return [self okJSON:YES extra:[ldJsonString(g_q) ?: @"{}"]];
+            return [self okJSON:YES extra:phxQuickStatesJSON()];
         }
 
         // ---- 作弊动作 ----
@@ -253,7 +223,11 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         if ([m isEqualToString:@"sendCommand"]) {
             NSString *c = a.count ? [NSString stringWithFormat:@"%@", a[0]] : nil;
             if (!c.length) return @"{\"ok\":false,\"err\":\"命令为空\"}";
-            ldExecCmd(c); ldqLog([NSString stringWithFormat:@"命令: %@", c]);
+            // 先走本地保留通道（PHXOPTS/PHXGIVE/PHXSPAWN/PHXCROSS/PHXDRAW/PHXGP_ 等）
+            if (phxLocalChannel(c)) { ldqLog([NSString stringWithFormat:@"保留通道: %@", c]); return @"{\"ok\":true}"; }
+            // 服务端协议命令与普通控制台命令
+            if (!phxHandleServerCommand(c)) ldExecCmd(c);
+            ldqLog([NSString stringWithFormat:@"命令: %@", c]);
             return @"{\"ok\":true}";
         }
         if ([m isEqualToString:@"joinServer"]) {
@@ -282,7 +256,7 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
         }
         if ([m isEqualToString:@"refreshPlayers"]) { ldAdminListPlayers(); return [self okJSON:YES extra:g_playersJson]; }
         if ([m isEqualToString:@"getPlayers"])     { return [self okJSON:YES extra:g_playersJson]; }
-        if ([m isEqualToString:@"isAdmin"])        { return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", g_isAdmin]]; }
+        if ([m isEqualToString:@"isAdmin"])        { return [self okJSON:YES extra:[NSString stringWithFormat:@"%d", g_adminOK]]; }
 
         // ---- 日志 / 状态 ----
         if ([m isEqualToString:@"getLogs"]) {
@@ -290,10 +264,11 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
             return [self okJSON:YES extra:[ldJsonString(@{@"lines": arr}) ?: @"{}"]];
         }
         if ([m isEqualToString:@"getServerStatus"]) {
+            // 先从云端回拉玩法数据（异步），本次先返回现有快照
             ldGameplayInfo(^(BOOL ok, NSString *body) {
-                if (ok && body.length) g_statusJson = body;
+                if (ok && body.length) g_gpJson = body;
             });
-            return [self okJSON:YES extra:(g_statusJson.length ? g_statusJson : @"{}")];
+            return [self okJSON:YES extra:phxStatusJSON()];
         }
 
         // ---- 剪贴板 ----
@@ -348,9 +323,9 @@ completionHandler:(void (^)(NSString * _Nullable))completionHandler {
             ldGetBalance(^(BOOL ok, NSString *body) {
                 if (!ok) return;
                 NSDictionary *r = ldParseJson(body);
-                if ([r isKindOfClass:[NSDictionary class]]) g_balance = (long long)ldInt(r, @"balance");
+                if ([r isKindOfClass:[NSDictionary class]]) g_shopBalanceLocal = (long long)ldInt(r, @"balance");
             });
-            return [self okJSON:YES extra:[NSString stringWithFormat:@"{\"balance\":%lld}", g_balance]];
+            return [self okJSON:YES extra:[NSString stringWithFormat:@"{\"balance\":%lld}", g_shopBalanceLocal]];
         }
         if ([m isEqualToString:@"buyShopItem"]) {
             NSString *iid = a.count ? [NSString stringWithFormat:@"%@", a[0]] : @"";

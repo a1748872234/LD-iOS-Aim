@@ -7,7 +7,7 @@ SDK=$(xcrun --sdk iphoneos --show-sdk-path)
 echo "SDK: $SDK"
 
 # 拼接：网页桥要调用 entry.mm 里的 static 函数，必须同一 TU
-cat entry.mm webui_part.mm > LD_iOS_Aim_all.mm
+cat entry.mm phoenix_core.mm webui_part.mm > LD_iOS_Aim_all.mm
 wc -l LD_iOS_Aim_all.mm
 
 clang -target arm64-apple-ios12.0 \
